@@ -1,0 +1,203 @@
+header{
+package jesp;
+/*-----------------------------------------------*\
+ | 	ANALIZDOR LEXICO 	 |
+\*-----------------------------------------------*/
+}
+
+class JESPLexer extends Lexer;
+
+options{
+charVocabulary = '\3'..'\377';		// Unicodes usuales
+exportVocab=JESPLexerVocab; 	// Comentar al hacer el parser
+testLiterals=false; 			// comprobar literales solamente cuando se diga exp
+k=2; // lookahead
+}
+
+tokens
+{
+// Tipos basicos
+TIPO_ENTERO	 = "Entero"	;
+TIPO_REAL	 = "Real" 		;
+TIPO_BOOLEANO 	= "Booleano" 	;
+TIPO_CADENA 	= "Cadena" 	;
+
+// Literales booleanos
+LIT_CIERTO = "cierto" ; LIT_FALSO = "falso" ;
+
+// Literales cadena
+LIT_NL = "nl"; LIT_TAB = "tab" ; LIT_COM = "com";
+
+// Palabras reservadas
+RES_CLASE 		= "clase" 		;
+RES_EXTIENDE 		= "extiende" 	;
+RES_METODO 		= "método" 	;
+RES_CONSTRUCTOR 	= "constructor" 	;
+RES_ATRIBUTO 		= "atributo" 	;
+RES_ABSTRACTO 		= "abstracto" 	;
+RES_PARAMETRO 		= "parámetro" 	;
+RES_CONVERTIR 		= "convertir" 	;
+RES_MIENTRAS 		= "mientras" 	;
+RES_HACER 		= "hacer" 	;
+RES_DESDE 		= "desde" 	;
+RES_SI			= "si" 		;
+RES_OTRAS 		= "otras" 		;
+RES_SALIR	 	= "volver" 	;
+RES_ESUN 		= "esUn" 		;
+RES_SUPER 		= "super" 	;
+
+// Operadores que empiezan con letras;
+OP_Y = "y" ;
+OP_O = "o" ;
+OP_NO = "no" ;
+
+// Los literales real y entero son "devueltos" en las
+// acciones del token "privado" LIT_NUMERO
+// LIT_REAL < paraphrase="un literal real" >;
+// LIT_ENTERO < paraphrase="un literal entero" >;
+}
+
+{ 
+// Comienza la zona de código
+protected Token makeToken(int type)
+{
+Token result = super.makeToken(type);
+result.setFilename(inputState.filename);
+return result;
+}
+}
+
+//Los tres tipos de retorno
+protected NL :
+(
+("\r\n") => "\r\n" // MS-DOS
+| '\r' // MACINTOSH
+| '\n' // UNIX
+)
+{ newline(); }
+;
+
+//Ignora los espacios en blanco
+protected BLANCO :
+( ' '
+| '\t'
+| NL
+) { $setType(Token.SKIP); } // La accion del blanco: ignorar
+;
+
+//Se incluyeron las letras utilizadas en español
+protected LETRA
+: 'a'..'z'
+| 'A'..'Z'
+| 'ñ' | 'Ñ'
+| 'á' | 'é' | 'í' | 'ó' | 'ú'
+| 'Á' | 'É' | 'Í' | 'Ó' | 'Ú'
+| 'ü' | 'Ü'
+;
+
+//Dígitos utilizados
+protected DIGITO : '0'..'9';
+
+//Para reconocer literales y palabras reservadas
+
+IDENT
+options
+{
+testLiterals=true; // Comprobar palabras reservadas
+paraphrase="un identificador";
+}
+:
+(LETRA|'_') (LETRA|DIGITO|'_')*
+;
+
+// Separadores
+PUNTO_COMA
+options { paraphrase="un punto y coma (';')"; }
+: ';'
+;
+COMA
+options { paraphrase="una coma (',')"; }
+: ','
+;
+LLAVE_AB
+options { paraphrase="una llave abierta ('{')"; }
+: '{'
+;
+LLAVE_CE
+options { paraphrase="una llave cerrada ('}')"; }
+: '}'
+;
+PUNTO
+options { paraphrase="un punto ('.')"; }
+: '.'
+;
+PARENT_AB
+options { paraphrase="un paréntesis abierto ('(')"; }
+: '('
+;
+PARENT_CE
+options { paraphrase="un paréntesis cerrado (')')"; }
+: ')'
+;
+BARRA_VERT
+options { paraphrase="una barra vertical ('|')"; }
+: '&'
+;
+
+// operadores
+OP_IGUAL		: "==" 	;
+OP_DISTINTO 		: "!=" 	;
+OP_ASIG 			: '=' 	;
+OP_MENOR 		: '<' 	;
+OP_MAYOR 		: '>' 	;
+OP_MENOR_IGUAL 		: "<=" 	;
+OP_MAYOR_IGUAL 		: ">=" 	;
+OP_MAS 			: '+' 	;
+OP_MENOS 		: '-' 	;
+OP_MASMAS 		: "++" 	;
+OP_MENOSMENOS 	: "--" 	;
+OP_PRODUCTO 		: '*' 	;
+OP_DIVISION 		: '/' 	;
+
+//Para poder reconocer literales (numeros) enteros y reales sin errores 
+LIT_NUMERO
+: ( ( DIGITO )+ '.' ) =>
+( DIGITO )+ '.' ( DIGITO )*
+{ $setType(LIT_REAL); }
+| ( DIGITO )+
+{ $setType(LIT_ENTERO); }
+;
+LIT_ENTERO
+options { paraphrase = "un literal entero"; }
+: '@' { throw new MismatchedCharException(); }
+;
+LIT_REAL
+options { paraphrase = "un literal real"; }
+: '#' { throw new MismatchedCharException(); }
+;
+
+//Comentario de una línea
+protected COMENTARIO1
+: "//" (~('\n'|'\r'))*
+{ $setType(Token.SKIP); }
+;
+
+//Comentario de varias líneas
+protected COMENTARIO2 :
+"/*"
+( ('*' NL) => '*' NL
+| ('*' ~('/'|'\n'|'\r')) => '*' ~('/'|'\n'|'\r')
+| NL
+| ~( '\n' | '\r' | '*' )
+)*
+"*/"
+{ $setType(Token.SKIP); }
+;
+
+//Literales en cadena
+LIT_CADENA
+options { paraphrase="un literal cadena"; }
+: '"' !
+( ~('"'|'\n'|'\r') )*
+'"' !
+;
