@@ -1,0 +1,348 @@
+header{
+package jesp;
+/*-----------------------------------------------*\
+ |      ANALIZADOR SINTÁCTICO	 |
+\*-----------------------------------------------*/
+}
+
+class JESPParser extends Parser;
+options
+{
+k = 2;
+importVocab = JESPLexerVocab;
+exportVocab = JESPParserVocab;
+buildAST = true;
+}
+
+tokens
+{
+// Tokens imaginarios para enraizar listas
+PROGRAMA ;
+LISTA_MIEMBROS;
+LISTA_EXPRESIONES;
+LISTA_INSTRUCCIONES;
+LISTA_DEC_PARAMS;
+
+// Tokens imaginarios que se utilizan cuando no hay raíces adecuadas
+OP_MENOS_UNARIO;
+INST_EXPRESION;
+INST_DEC_VAR;
+LLAMADA;
+ATRIBUTO;
+
+// Otros
+TIPO_VACIO;
+}
+
+//Lista de definiciones de una clase
+programa : (decClase)+
+{## = #( #[PROGRAMA, "PROGRAMA"] ,##);}
+;
+
+//Definición de una clase
+decClase : RES_CLASE^ IDENT clausulaExtiende
+llaveAb listaMiembros llaveCe
+;
+
+//Extender
+clausulaExtiende : RES_EXTIENDE^ IDENT
+|
+{ ## = #( #[RES_EXTIENDE,"extiende"],
+#[IDENT, "Objeto"] ); }
+;
+
+//Auxiliar para definición de clases
+protected listaMiembros
+: (decMetodo|decConstructor|decAtributo)*
+{ ## = #( #[LISTA_MIEMBROS, "LISTA_MIEMBROS"] ,##);}
+;
+
+//Declaración de tipos de variables
+tipo : 	  TIPO_ENTERO		 // tipo Entero
+| TIPO_REAL 		// tipo Real
+| TIPO_BOOLEANO 		// tipo Booleano
+| TIPO_CADENA 		// tipo Cadena
+| IDENT 			// tipo no básico
+;
+
+declaracion !  // desactiva construcción por defecto del AST
+[AST r, AST t, boolean inicializacion] // parámetros
+{
+AST raiz = astFactory.dupTree(r); 		// copia del arbol
+raiz.addChild(astFactory.dupTree(t)); 		// copia del árbol
+}
+: i1:IDENT
+{
+raiz.addChild(#i1);
+## = raiz;
+}
+| { inicializacion }? 
+i2:IDENT OP_ASIG valor:expresion
+{
+raiz.addChild(#i2);
+raiz.addChild(#valor);
+## = raiz;
+}
+| { inicializacion }?
+i3:IDENT parentAb li:listaExpresiones parentCe
+{
+raiz.addChild(#i3);
+raiz.addChild(#li);
+## = raiz;
+}
+;
+
+listaDeclaraciones [AST raiz, boolean inicializacion]
+: t:tipo!
+declaracion[raiz,#t,inicializacion]
+(coma declaracion[raiz,#t,inicializacion])*
+;
+
+//Definición de atributos (abstracto o no abstracto)
+decAtributo
+{ boolean abstracto = false; }
+: raiz:RES_ATRIBUTO^
+( a:RES_ABSTRACTO { abstracto=true; } )?
+listaDeclaraciones[#raiz, abstracto] puntoComa
+;
+
+//Definición de constructor
+decConstructor : RES_CONSTRUCTOR^ parentAb listaDecParams parentCe
+llaveAb listaInstrucciones llaveCe
+;
+
+//Definición de un método normal
+decMetodo
+: RES_METODO^ (RES_ABSTRACTO)? tipoRetorno IDENT
+parentAb listaDecParams parentCe
+llaveAb listaInstrucciones llaveCe
+;
+//Regla auxiliar que codifica el tipo de retorno de un método
+protected tipoRetorno
+: tipo
+| /* nada */ {## = #[TIPO_VACIO,"TIPO_VACIO"]; }
+;
+
+//Lista para parámetros
+listaDecParams
+{ final AST raiz = #[RES_PARAMETRO,"parámetro"] ;}
+:
+( listaDeclaraciones[raiz, false]
+( puntoComa listaDeclaraciones[raiz, false])* )? // opcional
+{ ## = #(#[LISTA_DEC_PARAMS,"LISTA_DEC_PARAMS"], ##); }
+;
+
+//Sirve para reconocer expresiones de JESP
+expresion: expAsignacion;
+
+// Asignaciones (nivel 9) 
+expAsignacion : expOLogico (OP_ASIG^ expOLogico)? ;
+
+// O lógico (nivel 8) 
+expOLogico : expYLogico (OP_O^ expYLogico)* ;
+
+// Y lógico (nivel 7)
+expYLogico : expComparacion (OP_Y^ expComparacion)* ;
+
+//Comparación (nivel 6)
+expComparacion
+: expAritmetica
+(
+( OP_IGUAL^ | OP_DISTINTO^ | OP_MAYOR^ | OP_MENOR^
+| OP_MAYOR_IGUAL^ | OP_MENOR_IGUAL^
+)
+expAritmetica
+)*
+;
+
+// Suma y resta aritmética (nivel 5)
+expAritmetica : expProducto ((OP_MAS^ | OP_MENOS^) expProducto)* ;
+
+// Producto y división (nivel 4)
+expProducto : expCambioSigno
+((OP_PRODUCTO^ | OP_DIVISION^) expCambioSigno)*
+;
+
+// Cambio de signo (nivel 3) 
+expCambioSigno :
+( OP_MENOS! expPostIncremento
+{ ##=#(#[OP_MENOS_UNARIO, "OP_MENOS_UNARIO"], ##) ;}
+)
+| (OP_MAS!)? expPostIncremento
+;
+
+// Postincremento y postdecremento (nivel 2) 
+expPostIncremento : expNegacion (OP_MASMAS^|OP_MENOSMENOS^)? ;
+
+// Negación y accesos (nivel 1)
+expNegacion : (OP_NO^)* expEsUn
+;
+
+// EsUn + accesos (nivel 0)
+expEsUn : acceso (RES_ESUN^ tipo)*
+;
+
+/**
+* Regla que permite reconocer los accesos de las expresiones de JESP.
+* Los accesos son los valores que se utilizan en las expresiones:
+* literales, variables, llamadas a métodos, etc.
+*/
+acceso : r1:raizAcceso { ## = #(#[ACCESO], #r1); }
+( punto sub1:subAcceso! { ##.addChild(#sub1); } )*
+| r2:raizAccesoConSubAccesos { ## = #(#[ACCESO], #r2); }
+( punto sub2:subAcceso! { ##.addChild(#sub2); } )+
+;
+
+/**
+* Raíz de los accesos que no son llamadas a un método de la
+* clase "actual"
+*/
+raizAcceso : IDENT
+| literal
+| llamada
+| conversion
+| PARENT_AB! expresion parentCe
+;
+
+/**
+* Raíz de los accesos que no son llamadas a un método de la
+* clase "actual" y que obligatoriamente van sucedidos de un subacceso
+*/
+raizAccesoConSubAccesos
+: RES_PARAMETRO
+| RES_ATRIBUTO
+| RES_SUPER
+;
+
+/** Regla que reconoce los literales */
+literal : LIT_ENTERO
+| LIT_REAL
+| LIT_CADENA
+| LIT_NL
+| LIT_TAB
+| LIT_COM
+| LIT_CIERTO
+| LIT_FALSO
+;
+
+/**
+* Esta regla se utiliza tanto para representar:
+* 1) Una llamada a un método del objeto actual
+* 2) Un subacceso en forma de llamada.
+* 3) Una llamada a un constructor del objeto actual
+* 4) Un subacceso en forma de constructor.
+*/
+llamada : IDENT parentAb listaExpresiones parentCe
+{ ## = #(#[LLAMADA,"LLAMADA"],##); }
+| RES_CONSTRUCTOR^ parentAb listaExpresiones parentCe
+; 
+/**
+* Regla auxiliar que reconoce los parámetros de una llamada
+* a un método y la inicialización del bucle "desde"
+*/
+protected listaExpresiones
+: ( expresion (coma expresion)* )?
+{ ## = #(#[LISTA_EXPRESIONES, "LISTA_EXPRESIONES"],##); }
+;
+
+//Conversión entre tipos
+conversion : RES_CONVERTIR^
+parentAb expresion coma tipo parentCe
+;
+
+//Para reconocer los accesos a atributos y métodos de un objeto
+subAcceso
+: llamada
+| IDENT
+| RES_SUPER
+;
+
+//Lista de 0 o más instrucciones
+listaInstrucciones
+: (instruccion)*
+{## = #( #[LISTA_INSTRUCCIONES,"LISTA_INSTRUCCIONES"], ##);}
+;
+
+/**
+* Las instrucciones. Pueden ser expresiones, instrucciones de control,
+* declaraciones de variables locales o la instrucción volver.
+*/
+instruccion : (tipo IDENT)=>instDecVar 	// declaración
+| instExpresion 			// Instrucción - expresión
+| instMientras 			// bucle mientras
+| instHacerMientras 		// bucle hacer-mientras
+| instDesde 			// bucle desde
+| instSi 				// Instrucción Si
+| instVolver 			// Instrucción volver
+| instNula 			// Instrucción Nula
+;
+
+//Instrucción nula
+instNula : PUNTO_COMA! ;
+
+//Instrucción volver
+instVolver : RES_VOLVER puntoComa ;
+
+//Instrucción-expresión
+instExpresion: expresion puntoComa
+{## = #( #[INST_EXPRESION,"INST_EXPRESION"], ##);}
+;
+
+//Declaración de variables locales
+instDecVar
+{ final AST raiz = #[INST_DEC_VAR,"variable"]; }
+: listaDeclaraciones[raiz,true] puntoComa ;
+
+//Bucle “mientras”
+instMientras : RES_MIENTRAS^ parentAb expresion parentCe
+llaveAb listaInstrucciones llaveCe
+;
+//Bucle “hacer mientras”
+instHacerMientras : RES_HACER^ llaveAb listaInstrucciones llaveCe
+RES_MIENTRAS parentAb expresion parentCe
+puntoComa
+;
+
+//Bucle “desde”
+instDesde : RES_DESDE^ parentAb listaExpresiones puntoComa
+listaExpresiones puntoComa
+listaExpresiones parentCe
+llaveAb listaInstrucciones llaveCe
+;
+
+//Instrucción “Si”
+instSi :
+RES_SI^ parentAb expresion parentCe
+llaveAb listaInstrucciones llaveCe
+alternativasSi
+;
+
+/**
+* Auxiliar (reconoce las alternativas de la instrucción "si"
+* sin warnings de ambigüedad)
+*/
+protected alternativasSi
+: altSiNormal alternativasSi
+| altSiOtras
+| /* nada */
+;
+
+/** Auxiliar (alternativa normal de la instrucción "si") */
+protected altSiNormal : BARRA_VERT^ parentAb expresion parentCe
+llaveAb listaInstrucciones llaveCe
+;
+
+/** Auxiliar (alternativa final "otras" de la instrucción "si") */
+protected altSiOtras : barraVert RES_OTRAS^
+llaveAb listaInstrucciones llaveCe
+;
+
+// Reglas auxiliares que serán reescritas para el tratamiento de errores
+parentAb : PARENT_AB! ;
+parentCe : PARENT_CE! ;
+llaveAb : LLAVE_AB! ;
+llaveCe : LLAVE_CE! ;
+coma : COMA! ;
+barraVert : BARRA_VERT! ;
+puntoComa : PUNTO_COMA! ;
+punto : PUNTO! ;
