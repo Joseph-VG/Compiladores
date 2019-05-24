@@ -1,0 +1,457 @@
+header
+{
+package jesp;
+/*-----------------------------------------------*\
+ |	Analizador Semántico	|
+\*-----------------------------------------------*/
+
+import antlraux.context.ContextException;
+import antlraux.context.Scope;
+import antlraux.context.asts.*;
+import antlraux.context.types.Type;
+import antlraux.context.types.AttributeType;
+
+import jesp.types.*;
+
+import antlraux.util.LexInfoAST;
+import antlraux.util.Logger;
+
+import antlr.TokenStreamException;
+
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+
+}
+
+class JESPSymbolTreeParser extends JESPTreeParser;
+
+options
+{
+importVocab=JESPParserVocab;
+exportVocab=JESPSymbolTreeParserVocab;
+buildAST = true;
+ASTLabelType = antlraux.util.LexInfoAST;
+}
+
+tokens
+{
+TIPO_ERROR = "error";
+METACLASE = "metaclase" ;
+}
+
+{
+/**
+* La clase {link JESPContext} es una fachada que facilita la manipulación
+* contextual
+**/
+private JESPContext contexto;
+
+//Logger de la clase
+private Logger logger;
+
+//Constructor habitual
+public JESPSymbolTreeParser(Logger logger)
+throws RecognitionException
+{
+this();
+this.logger = logger;
+this.contexto = new JESPContext(logger);
+setASTNodeClass("antlraux.util.LexInfoAST");
+}
+
+// Constructor privado utilizado para leer TiposBasicos.jesp
+public JESPSymbolTreeParser(Logger logger, JESPContext contexto)
+throws RecognitionException
+{
+this();
+this.logger = logger;
+this.contexto = contexto;
+
+setASTNodeClass("antlraux.util.LexInfoAST");
+}
+
+public JESPContext obtenerContexto()
+{ return contexto; }
+
+public void reportError( String msg,
+String filename,
+int line,
+int column )
+
+{
+if(null==logger)
+{
+logger = new Logger("error", System.err);
+}
+logger.log( msg, 1, filename, line, column);
+}
+
+public void reportError(RecognitionException e)
+{
+reportError( e.getMessage(), e.getFilename(),
+e.getLine(), e.getColumn() );
+e.printStackTrace(System.out);
+}
+
+}
+
+// ------------------- FASE 1: Creación de ámbitos -----------------
+
+// Regla que sirve para recorrer el AST de definición de un programa JESP
+programa
+: #( PROGRAMA
+instalarTiposBasicos
+(decClase)+ )
+{ ## = new ScopeAST(##, contexto.getCurrentScope()); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Declaración de una clase
+decClase
+{
+JESPType claseActualTipo = null;
+ScopeAST ast = null;
+}:
+#( RES_CLASE nombre:IDENT #(RES_EXTIENDE padre:IDENT)
+{
+ast = new ScopeAST(##, contexto.abrirAmbitoClase (#nombre));
+if(contexto.tiposBasicosLeidos == true)
+{
+JESPType tipoPadre = contexto.obtenerTipo(#padre);
+
+claseActualTipo =
+new JESP( #nombre.getText(),
+tipoPadre,
+contexto.getCurrentScope(),
+new JESPMetaType(#nombre.getText()) );
+} else {
+claseActualTipo =
+JESPTypeManager.obtenerTipoBasico(
+#nombre.getText(), #nombre );
+claseActualTipo.setScope( contexto.getCurrentScope() );
+}
+
+claseActualTipo.insertarAtributosSuperClase();
+contexto.insertarDecClase(##, #nombre, claseActualTipo);
+}
+listaMiembrosContexto[ claseActualTipo ] )
+{
+contexto.cerrarAmbitoClase();
+claseActualTipo.insertarMetodosSuperClase();
+## = ast;
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Lista de miembros de una clase
+listaMiembrosContexto [JESPType claseActual]
+: #( LISTA_MIEMBROS ( decAtributoContexto[claseActual]
+| decMetodoContexto[claseActual]
+| decConstructorContexto[claseActual]
+)*
+)
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Declaración de un método
+decMetodoContexto [JESPType claseActual]
+{
+ScopeAST ast = null;
+boolean abstracto = false;
+JESPDecMetodoType metodoActual = null;
+}
+: #( RES_METODO ( RES_ABSTRACTO {abstracto=true;} )?
+tr:tipo nombre:IDENT
+{
+contexto.abrirAmbitoMetodo(#nombre);
+
+JESPType tret = (JESPType)((TypeAST)#tr).getExpType();
+
+metodoActual =
+new JESPDecMetodoType( #nombre.getText(),
+tret,
+claseActual,
+contexto.getCurrentScope() );
+if(abstracto) metodoActual.addModifier("abstracto");
+}
+
+listaDecParamsContexto[metodoActual]
+{
+ast = new ScopeAST( ##, contexto.getCurrentScope());
+contexto.insertarVariableMetodo(ast, #nombre, tret);
+}
+listaInstrucciones
+)
+{
+contexto.cerrarAmbitoMetodo();
+## = ast;
+contexto.insertarDecMetodo(##, #nombre, metodoActual);
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Declaración de un atributo 
+decConstructorContexto[ JESPType claseActual ]
+{ JESPDecConstructorType tipoConstructor = null; }
+: #( RES_CONSTRUCTOR
+{
+tipoConstructor =
+new JESPDecConstructorType( claseActual,
+contexto.abrirAmbitoConstructor() );
+}
+listaDecParamsContexto [tipoConstructor]
+listaInstrucciones )
+{
+## = new ScopeAST ( ##, contexto.cerrarAmbitoConstructor());
+contexto.insertarDecConstructor( ##, tipoConstructor );
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+//Bucle “mientras”
+instMientras
+: #( RES_MIENTRAS
+{ contexto.abrirAmbitoMientras(); }
+expresion
+listaInstrucciones
+)
+{ ## = new ScopeAST(##, contexto.cerrarAmbitoMientras()); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+//Bucle “hacer mientras”
+instHacerMientras
+: #( RES_HACER
+{ contexto.abrirAmbitoHacerMientras(); }
+listaInstrucciones
+expresion
+)
+{ ## = new ScopeAST(##, contexto.cerrarAmbitoHacerMientras()); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+//Bucle “desde”
+instDesde
+: #( RES_DESDE
+{ contexto.abrirAmbitoDesde(); }
+listaExpresiones
+listaExpresiones
+listaExpresiones
+listaInstrucciones
+)
+{ ## = new ScopeAST(##, contexto.cerrarAmbitoDesde()); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+//Instrucción condicional
+instSi
+{ Scope s = null; }
+: #( RES_SI
+{ contexto.abrirAmbitoCondicional(); }
+expresion
+listaInstrucciones
+{ s = contexto.cerrarAmbitoCondicional(); }
+(alternativaSi)*
+)
+{ ## = new ScopeAST(##, s); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Alternativas de la instrucción condicional
+alternativaSi
+{ Scope s = null; }
+: ( #( BARRA_VERT
+{ contexto.abrirAmbitoCondicional(); }
+expresion
+listaInstrucciones
+{ s = contexto.cerrarAmbitoCondicional(); }
+)
+| #( RES_OTRAS
+{ contexto.abrirAmbitoCondicional(); }
+listaInstrucciones
+{ s = contexto.cerrarAmbitoCondicional(); }
+)
+)
+{ ## = new ScopeAST(##, s); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+// Declaración de un atributo
+decAtributoContexto [JESPType claseActual]
+{ boolean abstracto = false; }
+: #( RES_ATRIBUTO (RES_ABSTRACTO {abstracto=true;})?
+t:tipo
+nombre:IDENT (v:expresion)? )
+{
+JESPType tipo = (JESPType)((TypeAST)#t).getExpType();
+AttributeType tipoAtributo =
+new AttributeType( RES_ATRIBUTO,
+#nombre.getText(),
+tipo,
+claseActual );
+if(abstracto) tipoAtributo.addModifier("abstracto");
+contexto.insertarDecAtributo( ##, #nombre, tipoAtributo, #v);
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+listaDecParamsContexto [JESPMethodType decMetodo]
+: #(LISTA_DEC_PARAMS (decParametroContexto[decMetodo])* )
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// Declaración de un parámetro 
+decParametroContexto[JESPMethodType decMetodo]
+: #(RES_PARAMETRO t:tipo nombre:IDENT)
+{
+JESPType tipoParametro = (JESPType)((TypeAST)#t).getExpType();
+decMetodo.addParam(tipoParametro);
+contexto.insertarDecParametro( ##, #nombre, tipoParametro );
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// -------------- FASE 2: Preparación de las expresiones ----------
+
+expresion
+: ( #( OP_MAS expresion expresion )
+| #( OP_MENOS expresion expresion )
+| #( OP_ASIG expresion expresion )
+| #( OP_O expresion expresion )
+| #( OP_Y expresion expresion )
+| #( OP_IGUAL expresion expresion )
+| #( OP_DISTINTO expresion expresion )
+| #( OP_MAYOR expresion expresion )
+| #( OP_MENOR expresion expresion )
+| #( OP_MAYOR_IGUAL expresion expresion )
+| #( OP_MENOR_IGUAL expresion expresion )
+| #( OP_PRODUCTO expresion expresion )
+| #( OP_DIVISION expresion expresion )
+| #( OP_MENOS_UNARIO expresion)
+| #( OP_MASMAS expresion)
+| #( OP_MENOSMENOS expresion)
+| #( OP_NO expresion)
+| #( RES_ESUN acceso tipo)
+)
+{ ## = new ExpressionAST(##); }
+| acceso
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+acceso : #(ACCESO raizAcceso (subAcceso)* )
+{ ## = new ExpressionAST(##); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+raizAcceso : ( IDENT
+| RES_PARAMETRO
+| RES_ATRIBUTO
+| RES_SUPER
+)
+{ ## = new ExpressionAST(##); }
+| literal
+| llamada
+| conversion
+| expresion
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+literal : ( LIT_ENTERO
+| LIT_REAL
+| LIT_CADENA
+| LIT_NL
+| LIT_TAB
+| LIT_COM
+| LIT_CIERTO
+| LIT_FALSO
+)
+{ ## = new ExpressionAST(##); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+llamada : ( #(LLAMADA IDENT listaExpresiones )
+| #(RES_CONSTRUCTOR listaExpresiones )
+)
+{ ## = new ExpressionAST(##); }
+;
+
+exception catch [RecognitionException ce] { reportError(ce); }
+
+conversion : #(RES_CONVERTIR expresion tipo)
+{ ## = new ExpressionAST(##); }
+;
+
+exception catch [RecognitionException ce] { reportError(ce); }
+
+subAcceso : llamada
+| IDENT { ## = new ExpressionAST(##); }
+| RES_SUPER { ## = new ExpressionAST(##); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+// -------------- FASE 3: Preparación de los tipos ----------
+
+tipo
+{ Type t = null; }
+: ( TIPO_ENTERO { t = JESPTypeManager.tipoEntero; }
+| TIPO_REAL { t = JESPTypeManager.tipoReal; }
+| TIPO_BOOLEANO { t = JESPTypeManager.tipoBooleano; }
+| TIPO_CADENA { t = JESPTypeManager.tipoCadena; }
+| TIPO_VACIO { t = JESPTypeManager.tipoVacio; }
+| i:IDENT { t = contexto.obtenerTipo(i); }
+)
+{
+## = new TypeAST(##);
+((TypeAST)##).setExpType(t);
+}
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+// ------------ Fase 4: Instalación de tipos básicos ---------------
+
+programaBasico
+: #( PROGRAMA (decClase)+ )
+{ ## = new ScopeAST(##, contexto.getCurrentScope()); }
+;
+exception catch [RecognitionException ce] { reportError(ce); }
+
+instalarTiposBasicos : /* nada */
+{
+contexto.instalarTiposBasicos();
+String nombreFichero = "TiposBasicos.jesp";
+FileInputStream is = null;
+try
+{
+is = new FileInputStream(nombreFichero);
+}catch (FileNotFoundException fnfe){
+throw new RecognitionException(
+"El fichero '"+nombreFichero+"' no se encontró");
+}
+JESPLexer lexer = new JESPLexer(is);
+lexer.setTokenObjectClass("antlraux.util.LexInfoToken");
+lexer.setFilename(nombreFichero);
+JESPErrorRecoveryParser parser =
+new JESPErrorRecoveryParser(lexer,logger);
+parser.setASTNodeClass("antlraux.util.LexInfoAST");
+parser.setFilename(nombreFichero);
+try{
+parser.programa();
+}catch (TokenStreamException tse){
+throw new RecognitionException (
+"Excepción TokenStreamException encontrada "+
+"mientras se leía el fichero TiposBasicos.jesp");
+}
+AST ast = parser.getAST();
+
+JESPSymbolTreeParser tp =
+new JESPSymbolTreeParser(logger, contexto);
+
+tp.programaBasico(ast);
+
+// Devolver el primer hijo del programa, que lleva "atados"
+// sus "hermanos" (siblings)
+## = (LexInfoAST)(tp.getAST().getFirstChild());
+
+contexto.activarComprobaciones();
+
+contexto.tiposBasicosLeidos = true;
+}
+;
